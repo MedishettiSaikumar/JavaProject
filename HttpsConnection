@@ -1,0 +1,453 @@
+
+
+
+import aelibiraries.AE;
+import aelibiraries.ModId;
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.OutputStream;
+import java.net.ConnectException;
+import java.net.MalformedURLException;
+import java.net.SocketTimeoutException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.security.KeyManagementException;
+import java.security.NoSuchAlgorithmException;
+import java.security.cert.CertificateException;
+import java.security.cert.X509Certificate;
+import javax.net.ssl.HostnameVerifier;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSession;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+
+public class HttpsRequest implements javax.net.ssl.X509TrustManager {
+
+    boolean isException = false;
+
+    /**
+     * Description: this method meant for Establish communication between java
+     * program and Servlet based on parameter values.
+     *
+     * @param servlet
+     * @param object
+     * @return
+     */
+    public Object openconnObject(String servlet, Object object) {
+        Object result = null;
+        URL url;
+        ObjectOutputStream out;
+        try {
+            SSLContext sc = SSLContext.getInstance("SSLv3");
+            TrustManager[] tma = {new HttpsRequest()};
+            sc.init(null, tma, null);
+            SSLSocketFactory ssf = sc.getSocketFactory();
+            HttpsURLConnection.setDefaultSSLSocketFactory(ssf);
+            HttpsURLConnection connection = null;
+            HostnameVerifier hv = new HostnameVerifier() {
+                @Override
+                public boolean verify(String urlHostName, SSLSession session) {
+                    return true;
+                }
+            };
+            HttpsURLConnection.setDefaultHostnameVerifier(hv);
+            int i = 0;
+            String desiredUrl = AE.config.getMasterURL() + servlet;
+            desiredUrl = desiredUrl.replaceAll("[#%^|<>\"\\`\\\\]", "");
+            desiredUrl = desiredUrl.replace(' ', '+');
+            try {
+                if (servlet.equals("PerformanceDataIsolated") || servlet.equals("StoreURIInfo") || servlet.equals("AEDiagnosticsAlerts") || servlet.equals("AETopologyproducer") || servlet.equals("EndDevicesUpdation") || servlet.equals("CitrixSession") || servlet.equals("AEUpdateCitrixData") || servlet.equals("VDADetailsUpdation")) {
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+                        oos.writeObject(object);
+                    }
+                    AESEThread.totalByteSent += AESEThread.totalByteSent + baos.size();
+                }
+            } catch (Exception e) {
+                AE.logger.error(ModId.ASENDER, "Exception in HttpsRequest.openconn() while calculating BytesSent : " + e.getMessage());
+            }
+            while (i < 5) {
+                try {
+                    URI uri = new URI(desiredUrl);
+                    url = uri.toURL();
+                    connection = (HttpsURLConnection) url.openConnection();
+                    connection.setDoInput(true);
+                    connection.setDoOutput(true);
+                    connection.setRequestMethod("POST");
+                    connection.setConnectTimeout(60000);
+                    connection.setReadTimeout(10000);
+                    if (object != null) {
+                        out = new ObjectOutputStream(connection.getOutputStream());
+                        out.writeObject(object);
+                        out.close();
+                    }
+                    connection.connect();
+                    int res = connection.getResponseCode();
+                    if (res == 200) {
+                        AESEThread.masterUnreachableCount = 0;
+                        AE.agst.setMasterUnReachable(false);
+                        isException = false;
+                        break;
+                    }
+                } catch (NullPointerException npe) {
+                    isException = true;
+                    AE.logger.error(ModId.ASENDER, "NullPointerException in HttpsRequest.openconnObject() : " + npe.getMessage());
+                } catch (MalformedURLException | SocketTimeoutException mfue) {
+                    isException = true;
+                    AE.logger.error(ModId.ASENDER, "MalformedURLException in HttpsRequest.openconnObject() : " + mfue.getMessage());
+                    if (checkTimeSeriesServlet(servlet)) {
+                        if (mfue.getMessage().equalsIgnoreCase("Read timed out")) {
+                            AE.logger.error(ModId.ASENDER, "Read timed out exception in HttpsRequest.openconnObject() for servlet : " + servlet);
+                            break;
+                        }
+                    }
+                } catch (ConnectException ioe) {
+                    isException = true;
+                    AE.logger.error(ModId.ASENDER, "ConnectException in HttpsRequest.openconnObject() : " + ioe.getMessage());
+                } catch (IOException ioe) {
+                    isException = true;
+                    AE.logger.error(ModId.ASENDER, "IOException in HttpsRequest.openconnObject() : " + ioe.getMessage());
+                } catch (URISyntaxException e) {
+                    isException = true;
+                    AE.logger.error(ModId.ASENDER, "URISyntaxException in HttpsRequest.openconnObject() : " + e.getMessage());
+                } catch (Exception e) {
+                    isException = true;
+                    AE.logger.error(ModId.ASENDER, "Exception in HttpsRequest.openconnObject() : " + e.getMessage());
+                }
+                i++;
+                if (isException && AESEThread.masterUnreachableCount == 4 && servlet.equals(TimeSeriesServlets.PerformanceDataIsolated.toString())) {
+                    AE.logger.error(ModId.ASENDER, "Master Unreachable State in openconnObject() for : " + AESEThread.masterUnreachableCount + " iterations while connecting : " + AE.config.getMasterIP() + " for " + servlet);
+                    AE.agst.setMasterUnReachable(true);
+                    isException = false;
+                }
+            }
+            if (isException && servlet.equals(TimeSeriesServlets.PerformanceDataIsolated.toString())) {
+                AESEThread.masterUnreachableCount++;
+            }
+            ObjectInputStream output = null;
+            try {
+                output = new ObjectInputStream(connection.getInputStream());
+                if (output != null) {
+                    result = output.readObject();
+                } else {
+                    AE.logger.error(ModId.ASENDER, "Getting response as NULL from aComm in HttpsRequest.openconnObject() : ");
+                }
+            } catch (EOFException ioe) {
+                AE.logger.error(ModId.ASENDER, "EOFException while reading responses in HttpsRequest.openconnObject() : " + ioe.toString());
+            } catch (IOException ioe) {
+                AE.logger.error(ModId.ASENDER, "IOException while reading responses in HttpsRequest.openconnObject() : " + ioe.toString());
+            } catch (Exception e) {
+                AE.logger.error(ModId.ASENDER, "Exception while reading responses in HttpsRequest.openconnObject() : " + e.toString());
+            } finally {
+                if (output != null) {
+                    try {
+                        connection.disconnect();
+                        output.close();
+                    } catch (IOException ioe) {
+                        AE.logger.error(ModId.ASENDER, "IOException while closing connection and ObjectInputStream in HttpsRequest.openconnObject() : " + ioe.toString());
+                    } catch (Exception e) {
+                        AE.logger.error(ModId.ASENDER, "Exception while closing connection and ObjectInputStream in HttpsRequest.openconnObject() : " + e.toString());
+                    }
+                }
+            }
+        } catch (NoSuchAlgorithmException nsae) {
+            AE.logger.error(ModId.ASENDER, "NoSuchAlgorithmException in outer try in HttpsRequest.openconnObject() : " + nsae.toString());
+
+        } catch (KeyManagementException kme) {
+            AE.logger.error(ModId.ASENDER, "KeyManagementException in outer try in HttpsRequest.openconnObject() : " + kme.toString());
+
+        } catch (Exception e) {
+            AE.logger.error(ModId.ASENDER, "Exception in outer try in HttpsRequest.openconnObject() : " + e.toString());
+        }
+        return result;
+    } // end of openconnObj()
+
+    /**
+     * Description: this method meant for Establish communication between java
+     * program and Servlet based on parameter values and returns String.
+     *
+     * @param servlet
+     * @param object
+     * @return String
+     */
+    public Object openconn(String servlet, Object object) {
+        URL url;
+        StringBuilder responseData = new StringBuilder();
+        ObjectOutputStream out;
+        try {
+
+            SSLContext sc = SSLContext.getInstance("SSLv3");
+            TrustManager[] tma = {new Samplehttps()};
+            sc.init(null, tma, null);
+            SSLSocketFactory ssf = sc.getSocketFactory();
+            HttpsURLConnection.setDefaultSSLSocketFactory(ssf);
+            HttpsURLConnection connection = null;
+            HostnameVerifier hv = new HostnameVerifier() {
+                @Override
+                public boolean verify(String urlHostName, SSLSession session) {
+                    return true;
+                }
+            };
+            HttpsURLConnection.setDefaultHostnameVerifier(hv);
+            String desiredUrl = AE.config.getMasterURL() + servlet;
+            desiredUrl = desiredUrl.replaceAll("[#%^|<>\"\\`\\\\]", "");
+            desiredUrl = desiredUrl.replace(' ', '+');
+            int i = 0;
+            try {
+                if (servlet.equals("PerformanceDataIsolated") || servlet.equals("StoreURIInfo")
+                        || servlet.equals("AEDiagnosticsAlerts") || servlet.equals("AETopologyproducer")
+                        || servlet.equals("EndDevicesUpdation") || servlet.equals("CitrixSession") || servlet.equals("HiveSessions")
+                        || servlet.equals("AEUpdateCitrixData") || servlet.equals("VDADetailsUpdation") || servlet.equals("ApplicationCrashes")) {
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+                        oos.writeObject(object);
+                    }
+                    AESEThread.totalByteSent += AESEThread.totalByteSent + baos.size();
+                }
+            } catch (Exception e) {
+                AE.logger.error(ModId.ASENDER, "Exception in HttpsRequest.openconn() while calculating BytesSent : " + e.getMessage());
+            }
+            while (i < 5) {
+                try {
+                    URI uri = new URI(desiredUrl);
+                    url = uri.toURL();
+                    connection = (HttpsURLConnection) url.openConnection();
+                    connection.setDoInput(true);
+                    connection.setDoOutput(true);
+                    connection.setRequestMethod("POST");
+                    connection.setConnectTimeout(60000);
+                    connection.setReadTimeout(10000);
+                    if (object != null) {
+                        out = new ObjectOutputStream(connection.getOutputStream());
+                        out.writeObject(object);
+                        out.close();
+                    }
+                    connection.connect();
+                    int res = connection.getResponseCode();
+                    if (res == 200) {
+                        AE.agst.setMasterUnReachable(false);
+                        break;
+                    }
+                } catch (NullPointerException npe) {
+                    AE.logger.error(ModId.ASENDER, "NullPointerException in HttpsRequest.openconn() : " + npe.getMessage());
+                } catch (MalformedURLException | SocketTimeoutException mfue) {
+                    AE.logger.error(ModId.ASENDER, "MalformedURLException in HttpsRequest.openconn() : " + mfue.getMessage());
+                    if (checkTimeSeriesServlet(servlet)) {
+                        if (mfue.getMessage().equalsIgnoreCase("Read timed out")) {
+                            AE.logger.error(ModId.ASENDER, "Read timed out exception in HttpsRequest.openconn() for servlet : " + servlet);
+                            break;
+                        }
+                    }
+                } catch (ConnectException ioe) {
+                    AE.logger.error(ModId.ASENDER, "ConnectException in HttpsRequest.openconn() : " + ioe.toString());
+                } catch (IOException ioe) {
+                    AE.logger.error(ModId.ASENDER, "IOException in HttpsRequest.openconn() : " + ioe.getMessage());
+                } catch (URISyntaxException e) {
+                    AE.logger.error(ModId.ASENDER, "URISyntaxException in HttpsRequest.openconn() : " + e.getMessage());
+                } catch (Exception e) {
+                    AE.logger.error(ModId.ASENDER, "Exception in HttpsRequest.openconn() : " + e.getMessage());
+                }
+//                if (i == 4) {
+//                    AE.logger.error(ModId.ASENDER, "Master Unreachable State in openconn() for : " + i + " times while connecting : " + AE.config.getMasterIP() + " for " + servlet);
+//                    AE.agst.setMasterUnReachable(true);
+//                }
+                i++;
+            }
+            BufferedReader output = null;
+            try {
+                output = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+                String ResData;
+                while ((ResData = output.readLine()) != null) {
+                    responseData.append(ResData);
+                }
+            } catch (EOFException ioe) {
+                AE.logger.error(ModId.ASENDER, "IOException while reading responses in HttpsRequest.openconn() : " + ioe.toString());
+            } catch (IOException ioe) {
+                AE.logger.error(ModId.ASENDER, "IOException while reading responses in HttpsRequest.openconn() : " + ioe.toString());
+            } catch (Exception e) {
+                AE.logger.error(ModId.ASENDER, "Exception while reading responses in HttpsRequest.openconn() : " + e.toString());
+            } finally {
+                if (output != null) {
+                    try {
+                        connection.disconnect();
+                        output.close();
+                    } catch (IOException ioe) {
+                        AE.logger.error(ModId.ASENDER, "IOException while closing connection and ObjectInputStream in HttpsRequest.openconn() : " + ioe.toString());
+                    } catch (Exception e) {
+                        AE.logger.error(ModId.ASENDER, "Exception while closing connection and ObjectInputStream in HttpsRequest.openconn() : " + e.toString());
+                    }
+                }
+            }
+        } catch (NoSuchAlgorithmException nsae) {
+            AE.logger.error(ModId.ASENDER, "NoSuchAlgorithmException in outer try in HttpsRequest.openconn() : " + nsae.toString());
+
+        } catch (KeyManagementException kme) {
+            AE.logger.error(ModId.ASENDER, "KeyManagementException in outer try in HttpsRequest.openconn() : " + kme.toString());
+
+        } catch (Exception e) {
+            AE.logger.error(ModId.ASENDER, "Exception in outer try in HttpsRequest.openconn() : " + e.toString());
+        }
+        return "" + responseData;
+    }
+
+    @Override
+    public void checkClientTrusted(X509Certificate[] xcs, String string) throws CertificateException {
+//        throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+    }
+
+    @Override
+    public void checkServerTrusted(X509Certificate[] xcs, String string) throws CertificateException {
+//        throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+    }
+
+    @Override
+    public X509Certificate[] getAcceptedIssuers() {
+//        throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+        return null;
+    }
+
+    private boolean checkTimeSeriesServlet(String servlet) {
+        boolean flag = false;
+        try {
+            switch (TimeSeriesServlets.valueOf(servlet)) {
+                case AETopologyproducer:
+                case AEUpdateCitrixData:
+                case AEUsers:
+                case EndDevicesUpdation:
+                case PerformanceDataIsolated:
+                case StoreURIInfo:
+                case VDADetailsUpdation:
+                case AEDesktop:
+                case AETopoQProducer:
+                case AEDiagnosticsAlerts:
+                    flag = true;
+                    break;
+                default:
+                    AE.logger.error(ModId.ASENDER, "The servlet not matched :" + servlet);
+                    break;
+            }
+        } catch (Exception e) {
+            AE.logger.error(ModId.ASENDER, "case not matched :" + e);
+        }
+
+        return flag;
+    }
+
+    public Object openconnToSendLogFile(String servlet, File file) {
+        URL url;
+        StringBuilder responseData = new StringBuilder();
+        OutputStream out;
+        try {
+
+            SSLContext sc = SSLContext.getInstance("SSLv3");
+            TrustManager[] tma = {new Samplehttps()};
+            sc.init(null, tma, null);
+            SSLSocketFactory ssf = sc.getSocketFactory();
+            HttpsURLConnection.setDefaultSSLSocketFactory(ssf);
+            HttpsURLConnection connection = null;
+            HostnameVerifier hv = new HostnameVerifier() {
+                @Override
+                public boolean verify(String urlHostName, SSLSession session) {
+                    return true;
+                }
+            };
+            HttpsURLConnection.setDefaultHostnameVerifier(hv);
+            String desiredUrl = AE.config.getMasterURL() + servlet;
+            desiredUrl = desiredUrl.replaceAll("[#%^|<>\"\\`\\\\]", "");
+            desiredUrl = desiredUrl.replace(' ', '+');
+            int i = 0;
+            while (i < 5) {
+                try {
+                    URI uri = new URI(desiredUrl);
+                    url = uri.toURL();
+                    connection = (HttpsURLConnection) url.openConnection();
+                    connection.setDoInput(true);
+                    connection.setDoOutput(true);
+                    connection.setRequestMethod("POST");
+                    connection.setConnectTimeout(60000 * 5);
+                    connection.setReadTimeout(10000);
+                    if (file.exists()) {
+                        out = connection.getOutputStream();
+                        FileInputStream inputStream = new FileInputStream(file);
+                        byte[] b = new byte[1024];
+                        int count;
+                        while ((count = inputStream.read(b)) != -1) {
+                            out.write(b, 0, count);
+                        }
+
+                        out.flush();
+                        out.close();
+                    }
+                    connection.connect();
+                    int res = connection.getResponseCode();
+                    if (res == 200) {
+                        AE.agst.setMasterUnReachable(false);
+                        break;
+                    }
+                } catch (NullPointerException npe) {
+                    AE.logger.error(ModId.ASENDER, "NullPointerException in HttpsRequest.openconn() : " + npe.getMessage());
+                } catch (MalformedURLException | SocketTimeoutException mfue) {
+                    AE.logger.error(ModId.ASENDER, "MalformedURLException in HttpsRequest.openconn() : " + mfue.getMessage());
+                    if (checkTimeSeriesServlet(servlet)) {
+                        if (mfue.getMessage().equalsIgnoreCase("Read timed out")) {
+                            AE.logger.error(ModId.ASENDER, "Read timed out exception in HttpsRequest.openconn() for servlet : " + servlet);
+                            break;
+                        }
+                    }
+                } catch (ConnectException ioe) {
+                    AE.logger.error(ModId.ASENDER, "ConnectException in HttpsRequest.openconn() : " + ioe.toString());
+                } catch (IOException ioe) {
+                    AE.logger.error(ModId.ASENDER, "IOException in HttpsRequest.openconn() : " + ioe.getMessage());
+                } catch (URISyntaxException e) {
+                    AE.logger.error(ModId.ASENDER, "URISyntaxException in HttpsRequest.openconn() : " + e.getMessage());
+                } catch (Exception e) {
+                    AE.logger.error(ModId.ASENDER, "Exception in HttpsRequest.openconn() : " + e.getMessage());
+                }
+                i++;
+            }
+            BufferedReader output = null;
+            try {
+                output = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+                String ResData;
+                while ((ResData = output.readLine()) != null) {
+                    responseData.append(ResData);
+                }
+            } catch (EOFException ioe) {
+                AE.logger.error(ModId.ASENDER, "IOException while reading responses in HttpsRequest.openconn() : " + ioe.toString());
+            } catch (IOException ioe) {
+                AE.logger.error(ModId.ASENDER, "IOException while reading responses in HttpsRequest.openconn() : " + ioe.toString());
+            } catch (Exception e) {
+                AE.logger.error(ModId.ASENDER, "Exception while reading responses in HttpsRequest.openconn() : " + e.toString());
+            } finally {
+                if (output != null) {
+                    try {
+                        connection.disconnect();
+                        output.close();
+                    } catch (IOException ioe) {
+                        AE.logger.error(ModId.ASENDER, "IOException while closing connection and ObjectInputStream in HttpsRequest.openconn() : " + ioe.toString());
+                    } catch (Exception e) {
+                        AE.logger.error(ModId.ASENDER, "Exception while closing connection and ObjectInputStream in HttpsRequest.openconn() : " + e.toString());
+                    }
+                }
+            }
+        } catch (NoSuchAlgorithmException nsae) {
+            AE.logger.error(ModId.ASENDER, "NoSuchAlgorithmException in outer try in HttpsRequest.openconn() : " + nsae.toString());
+
+        } catch (KeyManagementException kme) {
+            AE.logger.error(ModId.ASENDER, "KeyManagementException in outer try in HttpsRequest.openconn() : " + kme.toString());
+
+        } catch (Exception e) {
+            AE.logger.error(ModId.ASENDER, "Exception in outer try in HttpsRequest.openconn() : " + e.toString());
+        }
+        return "" + responseData;
+    }
+}
